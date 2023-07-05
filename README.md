@@ -1,7 +1,8 @@
 # omicron-stress 
 
 A stress testing framework for [omicron, the Oxide control
-plane](https://github.com/oxidecomputer/omicron).
+plane](https://github.com/oxidecomputer/omicron), because stress tests reduce
+stress levels :)
 
 ## Usage
 
