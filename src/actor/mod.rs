@@ -5,12 +5,16 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tracing::{info, info_span, Instrument};
 
+pub mod disk;
 pub mod instance;
 
 /// The kinds of actors this module can instantiate.
 pub enum ActorKind {
     /// Creates, starts, stops, and destroys instances.
     Instance(instance::Params),
+
+    /// Creates and deletes disks.
+    Disk(disk::Params),
 }
 
 /// An individual actor task.
@@ -46,6 +50,8 @@ fn make_antagonist(kind: ActorKind) -> Result<Box<dyn Antagonist>> {
         ActorKind::Instance(params) => {
             Ok(Box::new(instance::InstanceActor::new(params)?))
         }
+
+        ActorKind::Disk(params) => Ok(Box::new(disk::DiskActor::new(params)?)),
     }
 }
 

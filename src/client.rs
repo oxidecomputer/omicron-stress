@@ -56,15 +56,26 @@ pub fn get_client(config: &crate::config::Config) -> Result<oxide_api::Client> {
     // for any reason (`hosts.toml` not found or malformed, or no search path
     // was present), fall back to the OXIDE_TOKEN variable.
     let token = if let Some(hosts_toml_dir) = hosts_toml_dir {
-        info!("reading hosts.toml from {}", hosts_toml_dir.display());
-        let hosts = read_hosts_toml(hosts_toml_dir)?;
-        info!("attempting to read token from hosts.toml");
-        match hosts.hosts.get(&host) {
-            Some(entry) => Some(entry.token.clone()),
-            None => {
-                info!("no token found in hosts.toml");
-                None
+        let hosts_toml = {
+            let mut hosts_toml = hosts_toml_dir.clone();
+            hosts_toml.push("hosts.toml");
+            hosts_toml
+        };
+
+        if hosts_toml.exists() {
+            info!("reading hosts.toml from {}", hosts_toml_dir.display());
+            let hosts = read_hosts_toml(hosts_toml_dir)?;
+            info!("attempting to read token from hosts.toml");
+            match hosts.hosts.get(&host) {
+                Some(entry) => Some(entry.token.clone()),
+                None => {
+                    info!("no token found in hosts.toml");
+                    None
+                }
             }
+        } else {
+            info!("hosts.toml file does not exist");
+            None
         }
     } else {
         info!("no search path for hosts.toml");

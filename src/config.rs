@@ -12,6 +12,14 @@ pub struct Config {
     #[arg(long, default_value_t = 4)]
     pub threads_per_instance: usize,
 
+    /// The number of test disks to create.
+    #[arg(long, default_value_t = 4)]
+    pub num_test_disks: usize,
+
+    /// The number of antagonist threads to create for each disk.
+    #[arg(long, default_value_t = 4)]
+    pub threads_per_disk: usize,
+
     /// The URI of the Nexus instance the stress test should interact with.
     /// If not set, falls back to the value of the OXIDE_HOST environment
     /// variable.

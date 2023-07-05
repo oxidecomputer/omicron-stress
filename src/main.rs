@@ -1,14 +1,16 @@
 use std::{net::Ipv4Addr, sync::OnceLock};
 
-use actor::{instance, ActorKind};
+use actor::{disk, instance, ActorKind};
 use anyhow::{Context, Result};
 use clap::Parser;
 use futures::stream::FuturesUnordered;
 use oxide_api::{
     builder::ProjectView,
     types::{IpRange, Ipv4Range, Name, ProjectCreate},
-    ClientProjectsExt, ClientSystemExt,
+    ClientProjectsExt, ClientSystemNetworkingExt,
 };
+use std::future::Future;
+use std::pin::Pin;
 use tokio_stream::StreamExt;
 use tracing::{error, info};
 use tracing_subscriber::layer::SubscriberExt;
@@ -93,7 +95,10 @@ async fn main() -> Result<()> {
     create_test_project(&client).await?;
 
     let mut actors = Vec::new();
-    let mut error_futures = FuturesUnordered::new();
+    let mut error_futures: FuturesUnordered<
+        Pin<Box<dyn Future<Output = Option<anyhow::Error>>>>,
+    > = FuturesUnordered::new();
+
     for inst in 0..config().num_test_instances {
         for actor_index in 0..config().threads_per_instance {
             let (actor, mut error_ch) = actor::Actor::new(
@@ -105,7 +110,22 @@ async fn main() -> Result<()> {
             )?;
 
             actors.push(actor);
-            error_futures.push(async move { error_ch.recv().await });
+            error_futures.push(Box::pin(async move { error_ch.recv().await }));
+        }
+    }
+
+    for disk in 0..config().num_test_disks {
+        for actor_index in 0..config().threads_per_disk {
+            let (actor, mut error_ch) = actor::Actor::new(
+                format!("disk{}_{}", disk, actor_index),
+                ActorKind::Disk(disk::Params {
+                    project: PROJECT_NAME.to_owned(),
+                    disk_name: format!("disk{}", disk),
+                }),
+            )?;
+
+            actors.push(actor);
+            error_futures.push(Box::pin(async move { error_ch.recv().await }));
         }
     }
 
