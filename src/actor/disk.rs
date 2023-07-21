@@ -88,7 +88,7 @@ impl DiskActor {
         }
     }
 
-    /// Asks to create this actor's disk. The created disk has 5 GB.
+    /// Asks to create this actor's disk. The created disk size is 1 GB.
     async fn create_disk(&self) -> Result<()> {
         let body = DiskCreate {
             description: self.disk_name.to_owned(),
@@ -96,7 +96,7 @@ impl DiskActor {
                 block_size: BlockSize::try_from(512_i64).unwrap(),
             },
             name: Name::try_from(&self.disk_name).unwrap(),
-            size: ByteCount::from(5 * 1024 * 1024 * 1024_u64),
+            size: ByteCount::from(1024 * 1024 * 1024_u64),
         };
 
         info!(body = ?body, "sending disk create request");
