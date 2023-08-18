@@ -20,6 +20,19 @@ pub struct Config {
     #[arg(long, default_value_t = 4)]
     pub threads_per_disk: usize,
 
+    /// The number of test snapshots to create.
+    #[arg(long, default_value_t = 4)]
+    pub num_test_snapshots: usize,
+
+    /// If true, all snapshot antagonishs use the same disk. If false, then use
+    /// one disk per snapshot antagonist.
+    #[arg(long)]
+    pub snapshots_use_same_disk: bool,
+
+    /// The number of antagonist threads to create for each snapshot.
+    #[arg(long, default_value_t = 4)]
+    pub threads_per_snapshot: usize,
+
     /// The URI of the Nexus instance the stress test should interact with.
     /// If not set, falls back to the value of the OXIDE_HOST environment
     /// variable.

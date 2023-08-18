@@ -7,6 +7,7 @@ use tracing::{info, info_span, Instrument};
 
 pub mod disk;
 pub mod instance;
+pub mod snapshot;
 
 /// The kinds of actors this module can instantiate.
 pub enum ActorKind {
@@ -15,6 +16,9 @@ pub enum ActorKind {
 
     /// Creates and deletes disks.
     Disk(disk::Params),
+
+    /// Creates and deletes snapshots.
+    Snapshot(snapshot::Params),
 }
 
 /// An individual actor task.
@@ -52,6 +56,10 @@ fn make_antagonist(kind: ActorKind) -> Result<Box<dyn Antagonist>> {
         }
 
         ActorKind::Disk(params) => Ok(Box::new(disk::DiskActor::new(params)?)),
+
+        ActorKind::Snapshot(params) => {
+            Ok(Box::new(snapshot::SnapshotActor::new(params)?))
+        }
     }
 }
 
