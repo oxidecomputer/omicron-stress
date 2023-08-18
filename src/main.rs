@@ -1,6 +1,6 @@
 use std::{net::Ipv4Addr, sync::OnceLock};
 
-use actor::{disk, instance, ActorKind};
+use actor::{disk, instance, snapshot, ActorKind};
 use anyhow::{Context, Result};
 use clap::Parser;
 use futures::stream::FuturesUnordered;
@@ -121,6 +121,26 @@ async fn main() -> Result<()> {
                 ActorKind::Disk(disk::Params {
                     project: PROJECT_NAME.to_owned(),
                     disk_name: format!("disk{}", disk),
+                }),
+            )?;
+
+            actors.push(actor);
+            error_futures.push(Box::pin(async move { error_ch.recv().await }));
+        }
+    }
+
+    for snapshot in 0..config().num_test_snapshots {
+        for actor_index in 0..config().threads_per_snapshot {
+            let (actor, mut error_ch) = actor::Actor::new(
+                format!("snapshot{}_{}", snapshot, actor_index),
+                ActorKind::Snapshot(snapshot::Params {
+                    project: PROJECT_NAME.to_owned(),
+                    disk_name: if config().snapshots_use_same_disk {
+                        format!("disk{}", snapshot)
+                    } else {
+                        format!("disk{}{}", snapshot, actor_index)
+                    },
+                    snapshot_name: format!("snapshot{}", snapshot),
                 }),
             )?;
 
