@@ -46,4 +46,8 @@ pub struct Config {
     /// environment variable.
     #[arg(long)]
     pub hosts_toml_dir: Option<PathBuf>,
+
+    /// Halt omicron-stress if a 500 series error was seen
+    #[arg(long)]
+    pub server_errors_fatal: bool,
 }

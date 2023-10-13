@@ -12,28 +12,54 @@ pub async fn sleep_random_ms(max_millis: u64) {
     tokio::time::sleep(duration).await;
 }
 
-/// Given a response value from an Oxide API call, returns:
+pub type OxideApiError = oxide_api::Error<oxide_api::types::Error>;
+
+pub fn unwrap_oxide_api_error<T>(
+    result: core::result::Result<oxide_api::ResponseValue<T>, OxideApiError>,
+) -> core::result::Result<(), OxideApiError> {
+    result.map(|_| ())
+}
+
+/// Given an error response from an Oxide API call, returns:
 ///
-/// - `Ok` if the call succeeded.
 /// - `Ok` if the call failed but produced an error response value, irrespective
 ///   of the type of error response.
 /// - `Err` if the call failed without producing an error response value, e.g.
 ///   because the connection to Nexus was interrupted or because a malformed
 ///   response was received.
-pub fn fail_if_no_response<T, U>(
-    result: core::result::Result<
-        oxide_api::ResponseValue<T>,
-        oxide_api::Error<U>,
-    >,
+pub fn fail_if_no_response<U>(
+    e: oxide_api::Error<U>,
 ) -> core::result::Result<(), oxide_api::Error<U>>
 where
     U: std::fmt::Debug + Send + Sync,
 {
-    match result {
-        Ok(_) => Ok(()),
-        Err(e) => match e {
-            oxide_api::Error::ErrorResponse(_) => Ok(()),
-            _ => Err(e),
+    match e {
+        oxide_api::Error::ErrorResponse(_) => Ok(()),
+        _ => Err(e),
+    }
+}
+
+/// Given an error response from an Oxide API call, returns:
+///
+/// - `Err` if the call failed but produced an error response value, if it is a
+///   500 series error.
+/// - `Err` if the call failed without producing an error response value, e.g.
+///   because the connection to Nexus was interrupted or because a malformed
+///   response was received.
+/// - `Ok` otherwise
+pub fn fail_if_500<U>(
+    e: oxide_api::Error<U>,
+) -> core::result::Result<(), oxide_api::Error<U>>
+where
+    U: std::fmt::Debug + Send + Sync,
+{
+    match &e {
+        oxide_api::Error::ErrorResponse(r) => match r.status() {
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR => Err(e),
+
+            _ => Ok(()),
         },
+
+        _ => Err(e),
     }
 }
