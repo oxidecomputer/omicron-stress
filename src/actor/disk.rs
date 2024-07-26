@@ -2,13 +2,13 @@
 
 use async_trait::async_trait;
 use core::result::Result;
-use oxide_api::types::BlockSize;
-use oxide_api::types::ByteCount;
-use oxide_api::types::DiskCreate;
-use oxide_api::types::DiskSource;
-use oxide_api::types::DiskState;
-use oxide_api::types::Name;
-use oxide_api::ClientDisksExt;
+use oxide::types::BlockSize;
+use oxide::types::ByteCount;
+use oxide::types::DiskCreate;
+use oxide::types::DiskSource;
+use oxide::types::DiskState;
+use oxide::types::Name;
+use oxide::ClientDisksExt;
 use tracing::{info, trace, warn};
 
 use crate::actor::AntagonistError;
@@ -43,7 +43,7 @@ pub struct Params {
 /// The internal state for a disk antagonist.
 #[derive(Debug)]
 pub(super) struct DiskActor {
-    client: oxide_api::Client,
+    client: oxide::Client,
     project: String,
     disk_name: String,
 }
@@ -78,12 +78,15 @@ impl DiskActor {
             Ok(response_value) => Ok(Some(response_value.into_inner().state)),
 
             Err(e) => match &e {
-                oxide_api::Error::InvalidRequest(_)
-                | oxide_api::Error::CommunicationError(_)
-                | oxide_api::Error::InvalidResponsePayload(_)
-                | oxide_api::Error::UnexpectedResponse(_) => Err(e),
+                oxide::Error::InvalidRequest(_)
+                | oxide::Error::CommunicationError(_)
+                | oxide::Error::InvalidResponsePayload(_, _)
+                | oxide::Error::UnexpectedResponse(_)
+                | oxide::Error::InvalidUpgrade(_)
+                | oxide::Error::ResponseBodyError(_)
+                | oxide::Error::PreHookError(_) => Err(e),
 
-                oxide_api::Error::ErrorResponse(response_value) => {
+                oxide::Error::ErrorResponse(response_value) => {
                     let status = response_value.status();
 
                     // It's OK if the disk just isn't there. Any other error

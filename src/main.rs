@@ -4,7 +4,7 @@ use actor::{disk, instance, snapshot, ActorKind};
 use anyhow::{Context, Result};
 use clap::Parser;
 use futures::stream::FuturesUnordered;
-use oxide_api::{
+use oxide::{
     builder::ProjectView,
     types::{IpRange, Ipv4Range, Name, ProjectCreate},
     ClientProjectsExt, ClientSystemNetworkingExt,
@@ -31,7 +31,7 @@ const PROJECT_NAME: &str = "omicron-stress";
 
 /// Creates the harness's test project and ensures that there are external IPs
 /// in its IP pool.
-async fn create_test_project(client: &oxide_api::Client) -> Result<()> {
+async fn create_test_project(client: &oxide::Client) -> Result<()> {
     info!("Checking for existing stress project");
     if ProjectView::new(client).project(PROJECT_NAME).send().await.is_ok() {
         info!("Project already exists");

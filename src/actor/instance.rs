@@ -3,7 +3,8 @@
 
 use async_trait::async_trait;
 use core::result::Result;
-use oxide_api::{types::InstanceState, ClientInstancesExt};
+use oxide::types::InstanceState;
+use oxide::ClientInstancesExt;
 use tracing::{info, trace, warn};
 
 use crate::actor::AntagonistError;
@@ -40,7 +41,7 @@ pub struct Params {
 /// The internal state for an instance antagonist.
 #[derive(Debug)]
 pub(super) struct InstanceActor {
-    client: oxide_api::Client,
+    client: oxide::Client,
     project: String,
     instance_name: String,
 }
@@ -78,11 +79,15 @@ impl InstanceActor {
                 Ok(Some(response_value.into_inner().run_state))
             }
             Err(e) => match &e {
-                oxide_api::Error::InvalidRequest(_)
-                | oxide_api::Error::CommunicationError(_)
-                | oxide_api::Error::InvalidResponsePayload(_)
-                | oxide_api::Error::UnexpectedResponse(_) => Err(e),
-                oxide_api::Error::ErrorResponse(response_value) => {
+                oxide::Error::InvalidRequest(_)
+                | oxide::Error::CommunicationError(_)
+                | oxide::Error::InvalidResponsePayload(_, _)
+                | oxide::Error::UnexpectedResponse(_)
+                | oxide::Error::InvalidUpgrade(_)
+                | oxide::Error::ResponseBodyError(_)
+                | oxide::Error::PreHookError(_) => Err(e),
+
+                oxide::Error::ErrorResponse(response_value) => {
                     let status = response_value.status();
 
                     // It's OK if the instance just isn't there. Any other error
@@ -100,19 +105,24 @@ impl InstanceActor {
     /// Asks to create this actor's instance. The created instance has 1 vCPU,
     /// 1 GB RAM, and no disks or NICs.
     async fn create_instance(&self) -> Result<(), OxideApiError> {
-        let body = oxide_api::types::InstanceCreate {
+        let body = oxide::types::InstanceCreate {
             description: self.instance_name.to_owned(),
             disks: vec![],
             external_ips: vec![],
-            hostname: self.instance_name.to_owned(),
-            memory: oxide_api::types::ByteCount(1024 * 1024 * 1024),
-            name: oxide_api::types::Name::try_from(&self.instance_name)
-                .unwrap(),
-            ncpus: oxide_api::types::InstanceCpuCount(1),
+            hostname: self.instance_name.parse().map_err(|e| {
+                OxideApiError::InvalidRequest(format!(
+                    "{} is not a valid hostname: {e}",
+                    self.instance_name,
+                ))
+            })?,
+            memory: oxide::types::ByteCount(1024 * 1024 * 1024),
+            name: oxide::types::Name::try_from(&self.instance_name).unwrap(),
+            ncpus: oxide::types::InstanceCpuCount(1),
             network_interfaces:
-                oxide_api::types::InstanceNetworkInterfaceAttachment::None,
+                oxide::types::InstanceNetworkInterfaceAttachment::None,
             start: true,
             user_data: String::new(),
+            ssh_public_keys: None,
         };
 
         info!(body = ?body, "sending instance create request");

@@ -16,7 +16,7 @@ ctrlc = "3.4.0"
 dirs = "5.0.1"
 futures = "0.3.28"
 http = "0.2.9"
-oxide-api = { git = "http://github.com/oxidecomputer/oxide.rs.git", branch = "main" }
+oxide = { git = "http://github.com/oxidecomputer/oxide.rs.git", branch = "main" }
 rand = "0.8.5"
 reqwest = "0.11.18"
 serde = { version = "1.0.163", features = ["derive"] }
