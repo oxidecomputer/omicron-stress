@@ -178,7 +178,7 @@ impl super::Antagonist for DiskActor {
         let state = match self.get_disk_state().await? {
             None => {
                 info!("disk doesn't exist, will try to create it");
-                return self.create_disk().await.map_err(|e| e.into());
+                return self.create_disk().await.map_err(Into::into);
             }
             Some(state) => {
                 trace!(?state, "got disk state");
@@ -198,6 +198,6 @@ impl super::Antagonist for DiskActor {
 
         sleep_random_ms(100).await;
 
-        result.map_err(|e| e.into())
+        result.map_err(Into::into)
     }
 }

@@ -264,7 +264,7 @@ impl super::Antagonist for SnapshotActor {
         let state = match self.get_snapshot_state().await? {
             None => {
                 info!("snapshot doesn't exist, will try to create it");
-                return self.create_snapshot().await.map_err(|e| e.into());
+                return self.create_snapshot().await.map_err(Into::into);
             }
             Some(state) => {
                 trace!(?state, "got snapshot state");
@@ -284,6 +284,6 @@ impl super::Antagonist for SnapshotActor {
 
         sleep_random_ms(100).await;
 
-        result.map_err(|e| e.into())
+        result.map_err(Into::into)
     }
 }

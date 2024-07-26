@@ -246,7 +246,7 @@ impl super::Antagonist for InstanceActor {
         let state = match self.get_instance_state().await? {
             None => {
                 info!("instance doesn't exist, will try to create it");
-                return self.create_instance().await.map_err(|e| e.into());
+                return self.create_instance().await.map_err(Into::into);
             }
             Some(state) => {
                 trace!(?state, "got instance state");
@@ -268,6 +268,6 @@ impl super::Antagonist for InstanceActor {
 
         sleep_random_ms(100).await;
 
-        result.map_err(|e| e.into())
+        result.map_err(Into::into)
     }
 }
