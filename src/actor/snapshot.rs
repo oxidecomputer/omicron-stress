@@ -18,12 +18,19 @@ use crate::util::sleep_random_ms;
 use crate::util::unwrap_oxide_api_error;
 use crate::util::OxideApiError;
 
+#[derive(Debug, Clone)]
+enum BailReason {
+    /// This snapshot is in an invalid state
+    InvalidState { state: SnapshotState },
+}
+
 /// The possible actions that this antagonist can take.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Action {
     Wait,
     Create,
     Delete,
+    Bail { reason: BailReason },
 }
 
 /// The parameters used to configure a snapshot antagonist.
@@ -216,7 +223,7 @@ impl SnapshotActor {
 
     /// Selects an action for this antagonist to take given that its snapshot
     /// was observed to be in the supplied `state`.
-    fn get_next_action(&self, state: SnapshotState) -> anyhow::Result<Action> {
+    fn get_next_action(&self, state: SnapshotState) -> Action {
         use rand::prelude::Distribution;
         let actions = [Action::Wait, Action::Create, Action::Delete];
 
@@ -237,20 +244,17 @@ impl SnapshotActor {
             }
 
             _ => {
-                anyhow::bail!(
-                    "snapshot {} unexpectedly in state {:?}",
-                    self.snapshot_name,
-                    state,
-                );
+                return Action::Bail {
+                    reason: BailReason::InvalidState { state },
+                }
             }
         };
 
         // `new` returns an error if the iterator is empty, if any weight is <
         // 0, or if its total value is 0.
-        let dist = rand::distributions::WeightedIndex::new(weights)
-            .unwrap();
+        let dist = rand::distributions::WeightedIndex::new(weights).unwrap();
         let mut rng = rand::thread_rng();
-        Ok(actions[dist.sample(&mut rng)])
+        actions[dist.sample(&mut rng)].clone()
     }
 }
 
@@ -275,12 +279,20 @@ impl super::Antagonist for SnapshotActor {
 
         sleep_random_ms(100).await;
 
-        let action = self.get_next_action(state)?;
+        let action = self.get_next_action(state);
         trace!(?action, "selected action");
         let result = match action {
             Action::Wait => Ok(()),
             Action::Create => self.create_snapshot().await,
             Action::Delete => self.delete_snapshot().await,
+            Action::Bail { reason } => match reason {
+                BailReason::InvalidState { state } => {
+                    return Err(AntagonistError::InvalidState(format!(
+                        "snapshot {} is in invalid state {:?}",
+                        self.snapshot_name, state,
+                    )));
+                }
+            },
         };
 
         sleep_random_ms(100).await;

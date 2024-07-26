@@ -161,11 +161,11 @@ async fn main() -> Result<()> {
                     }
 
                     None => {
-                        let e = anyhow::anyhow!(
-                            "the {name} antagonist disconnected its error channel!"
-                        )
-                        .into();
-                        let _ = error_tx.send(e).await;
+                        let _ = error_tx
+                            .send(AntagonistError::DisconnectedErrorChannel {
+                                name,
+                            })
+                            .await;
                         break;
                     }
                 }
@@ -197,8 +197,9 @@ async fn main() -> Result<()> {
                                 }
                             }
 
-                            AntagonistError::AnyhowError(_) => {
-                                error!("actor error: {:?}", err);
+                            AntagonistError::InvalidState(_)
+                            | AntagonistError::DisconnectedErrorChannel { .. } => {
+                                error!("{err}");
                                 break;
                             }
                         }

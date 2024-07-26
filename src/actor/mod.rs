@@ -49,11 +49,14 @@ pub struct Actor {
 
 #[derive(thiserror::Error, Debug)]
 pub enum AntagonistError {
-    #[error("anyhow error")]
-    AnyhowError(#[from] anyhow::Error),
+    #[error("invalid actor state")]
+    InvalidState(String),
 
     #[error("oxide api error")]
     ApiError(#[from] OxideApiError),
+
+    #[error("antagonist {name} disconnected its error channel")]
+    DisconnectedErrorChannel { name: String },
 }
 
 /// A trait implemented by each kind of antagonist actor.

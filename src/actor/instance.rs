@@ -11,14 +11,21 @@ use crate::util::sleep_random_ms;
 use crate::util::unwrap_oxide_api_error;
 use crate::util::OxideApiError;
 
+#[derive(Debug, Clone)]
+enum BailReason {
+    /// This instance is in an invalid state
+    InvalidState { state: InstanceState },
+}
+
 /// The possible actions that the antagonist can take.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Action {
     Wait,
     Create,
     Start,
     Stop,
     Destroy,
+    Bail { reason: BailReason },
 }
 
 /// The parameters used to configure an instance antagonist.
@@ -185,7 +192,7 @@ impl InstanceActor {
 
     /// Selects an action for this antagonist to take given that its instance
     /// was observed to be in the supplied `state`.
-    fn get_next_action(&self, state: InstanceState) -> anyhow::Result<Action> {
+    fn get_next_action(&self, state: InstanceState) -> Action {
         use rand::prelude::Distribution;
         let actions = [
             Action::Wait,
@@ -213,29 +220,21 @@ impl InstanceActor {
 
             // Raise errors for things that shouldn't happen or unrecoverable
             // conditions.
-            InstanceState::Migrating => anyhow::bail!(
-                "instance {} unexpectedly migrating",
-                self.instance_name
-            ),
-            InstanceState::Repairing => anyhow::bail!(
-                "instance {} unexpectedly repairing",
-                self.instance_name
-            ),
-            InstanceState::Failed => {
-                anyhow::bail!("instance {} has failed", self.instance_name)
+            InstanceState::Migrating
+            | InstanceState::Repairing
+            | InstanceState::Destroyed
+            | InstanceState::Failed => {
+                return Action::Bail {
+                    reason: BailReason::InvalidState { state },
+                };
             }
-            InstanceState::Destroyed => anyhow::bail!(
-                "instance {} unexpectedly destroyed",
-                self.instance_name
-            ),
         };
 
         // `new` returns an error if the iterator is empty, if any weight is <
         // 0, or if its total value is 0.
-        let dist = rand::distributions::WeightedIndex::new(weights)
-            .unwrap();
+        let dist = rand::distributions::WeightedIndex::new(weights).unwrap();
         let mut rng = rand::thread_rng();
-        Ok(actions[dist.sample(&mut rng)])
+        actions[dist.sample(&mut rng)].clone()
     }
 }
 
@@ -257,7 +256,7 @@ impl super::Antagonist for InstanceActor {
 
         sleep_random_ms(100).await;
 
-        let action = self.get_next_action(state)?;
+        let action = self.get_next_action(state);
         trace!(?action, "selected action");
         let result = match action {
             Action::Wait => Ok(()),
@@ -265,6 +264,14 @@ impl super::Antagonist for InstanceActor {
             Action::Start => self.start_instance().await,
             Action::Stop => self.stop_instance().await,
             Action::Destroy => self.delete_instance().await,
+            Action::Bail { reason } => match reason {
+                BailReason::InvalidState { state } => {
+                    return Err(AntagonistError::InvalidState(format!(
+                        "instance {} unexpectedly in state {:?}",
+                        self.instance_name, state,
+                    )));
+                }
+            },
         };
 
         sleep_random_ms(100).await;

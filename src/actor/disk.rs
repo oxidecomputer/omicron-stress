@@ -16,12 +16,19 @@ use crate::util::sleep_random_ms;
 use crate::util::unwrap_oxide_api_error;
 use crate::util::OxideApiError;
 
+#[derive(Debug, Clone)]
+enum BailReason {
+    /// This disk is in an invalid state
+    InvalidState { state: DiskState },
+}
+
 /// The possible actions that this antagonist can take.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Action {
     Wait,
     Create,
     Delete,
+    Bail { reason: BailReason },
 }
 
 /// The parameters used to configure a disk antagonist.
@@ -140,7 +147,7 @@ impl DiskActor {
 
     /// Selects an action for this antagonist to take given that its disk was
     /// observed to be in the supplied `state`.
-    fn get_next_action(&self, state: DiskState) -> anyhow::Result<Action> {
+    fn get_next_action(&self, state: DiskState) -> Action {
         use rand::prelude::Distribution;
         let actions = [Action::Wait, Action::Create, Action::Delete];
 
@@ -154,20 +161,17 @@ impl DiskActor {
             DiskState::Detached => [35, 30, 35],
 
             _ => {
-                anyhow::bail!(
-                    "disk {} unexpectedly in state {:?}",
-                    self.disk_name,
-                    state,
-                );
+                return Action::Bail {
+                    reason: BailReason::InvalidState { state },
+                };
             }
         };
 
         // `new` returns an error if the iterator is empty, if any weight is <
         // 0, or if its total value is 0.
-        let dist = rand::distributions::WeightedIndex::new(weights)
-            .unwrap();
+        let dist = rand::distributions::WeightedIndex::new(weights).unwrap();
         let mut rng = rand::thread_rng();
-        Ok(actions[dist.sample(&mut rng)])
+        actions[dist.sample(&mut rng)].clone()
     }
 }
 
@@ -189,12 +193,20 @@ impl super::Antagonist for DiskActor {
 
         sleep_random_ms(100).await;
 
-        let action = self.get_next_action(state)?;
+        let action = self.get_next_action(state);
         trace!(?action, "selected action");
         let result = match action {
             Action::Wait => Ok(()),
             Action::Create => self.create_disk().await,
             Action::Delete => self.delete_disk().await,
+            Action::Bail { reason } => match reason {
+                BailReason::InvalidState { state } => {
+                    return Err(AntagonistError::InvalidState(format!(
+                        "disk {} unexpectedly in state {:?}",
+                        self.disk_name, state,
+                    )));
+                }
+            },
         };
 
         sleep_random_ms(100).await;
