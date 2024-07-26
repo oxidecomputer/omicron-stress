@@ -42,10 +42,12 @@ where
 /// Given an error response from an Oxide API call, returns:
 ///
 /// - `Err` if the call failed but produced an error response value, if it is a
-///   500 series error.
+///   500 error.
+///
 /// - `Err` if the call failed without producing an error response value, e.g.
 ///   because the connection to Nexus was interrupted or because a malformed
-///   response was received.
+///   or unexpected response was received.
+///
 /// - `Ok` otherwise
 pub fn fail_if_500<U>(
     e: oxide_api::Error<U>,
@@ -55,11 +57,19 @@ where
 {
     match &e {
         oxide_api::Error::ErrorResponse(r) => match r.status() {
+            // The call returned an error response
             reqwest::StatusCode::INTERNAL_SERVER_ERROR => Err(e),
 
             _ => Ok(()),
         },
 
-        _ => Err(e),
+        // There was a communication error, or deserialization failed, or an
+        // unexpected response was received
+        oxide_api::Error::CommunicationError(_)
+        | oxide_api::Error::InvalidResponsePayload(_)
+        | oxide_api::Error::UnexpectedResponse(_) => Err(e),
+
+        // The request was invalid
+        oxide_api::Error::InvalidRequest(_) => Ok(()),
     }
 }
