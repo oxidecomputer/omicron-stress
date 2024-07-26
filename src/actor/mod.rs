@@ -25,6 +25,9 @@ pub enum ActorKind {
 
 /// An individual actor task.
 pub struct Actor {
+    /// The actor's name
+    name: String,
+
     /// The tracing span to use for actions taken by this actor.
     span: tracing::Span,
 
@@ -137,7 +140,12 @@ impl Actor {
             .instrument(span.clone()),
         );
 
-        Ok((Self { span, task, pause_tx, paused_rx, halt_tx }, error_rx))
+        Ok((Self { name, span, task, pause_tx, paused_rx, halt_tx }, error_rx))
+    }
+
+    /// Return this actor's name
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Directs this actor to pause and waits for it to report that it has done

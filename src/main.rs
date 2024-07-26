@@ -108,8 +108,8 @@ async fn main() -> Result<()> {
                 }),
             )?;
 
+            error_channels.push((actor.name().to_string(), error_ch));
             actors.push(actor);
-            error_channels.push(error_ch);
         }
     }
 
@@ -123,8 +123,8 @@ async fn main() -> Result<()> {
                 }),
             )?;
 
+            error_channels.push((actor.name().to_string(), error_ch));
             actors.push(actor);
-            error_channels.push(error_ch);
         }
     }
 
@@ -143,15 +143,15 @@ async fn main() -> Result<()> {
                 }),
             )?;
 
+            error_channels.push((actor.name().to_string(), error_ch));
             actors.push(actor);
-            error_channels.push(error_ch);
         }
     }
 
     let (error_tx, mut error_rx) =
         tokio::sync::mpsc::channel::<AntagonistError>(1);
 
-    for mut error_ch in error_channels {
+    for (name, mut error_ch) in error_channels {
         let error_tx = error_tx.clone();
         tokio::spawn(async move {
             loop {
@@ -162,7 +162,7 @@ async fn main() -> Result<()> {
 
                     None => {
                         let e = anyhow::anyhow!(
-                            "an antagonist disconnected its error channel!"
+                            "the {name} antagonist disconnected its error channel!"
                         )
                         .into();
                         let _ = error_tx.send(e).await;
