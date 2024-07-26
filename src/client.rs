@@ -31,7 +31,7 @@ fn read_hosts_toml(mut dir: PathBuf) -> Result<Hosts> {
 
 /// Gets an Oxide SDK client. See the doc commens in `[crate::config::Config]`
 /// and in the project README for host and token resolution rules.
-pub fn get_client(config: &crate::config::Config) -> Result<oxide_api::Client> {
+pub fn get_client(config: &crate::config::Config) -> Result<oxide::Client> {
     // Prefer an explicitly-passed host URI to the value of OXIDE_HOST. At least
     // one of these must be specified.
     let host = match config.host_uri.as_ref() {
@@ -106,5 +106,5 @@ pub fn get_client(config: &crate::config::Config) -> Result<oxide_api::Client> {
         .build()
         .unwrap();
 
-    Ok(oxide_api::Client::new_with_client(&host, rclient))
+    Ok(oxide::Client::new_with_client(&host, rclient))
 }

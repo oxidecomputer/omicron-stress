@@ -2,15 +2,15 @@
 
 use async_trait::async_trait;
 use core::result::Result;
-use oxide_api::types::BlockSize;
-use oxide_api::types::ByteCount;
-use oxide_api::types::DiskCreate;
-use oxide_api::types::DiskSource;
-use oxide_api::types::Name;
-use oxide_api::types::SnapshotCreate;
-use oxide_api::types::SnapshotState;
-use oxide_api::ClientDisksExt;
-use oxide_api::ClientSnapshotsExt;
+use oxide::types::BlockSize;
+use oxide::types::ByteCount;
+use oxide::types::DiskCreate;
+use oxide::types::DiskSource;
+use oxide::types::Name;
+use oxide::types::SnapshotCreate;
+use oxide::types::SnapshotState;
+use oxide::ClientDisksExt;
+use oxide::ClientSnapshotsExt;
 use tracing::{info, trace, warn};
 
 use crate::actor::AntagonistError;
@@ -48,7 +48,7 @@ pub struct Params {
 /// The internal state for a snapshot antagonist.
 #[derive(Debug)]
 pub(super) struct SnapshotActor {
-    client: oxide_api::Client,
+    client: oxide::Client,
     project: String,
     disk_name: String,
     snapshot_name: String,
@@ -88,12 +88,15 @@ impl SnapshotActor {
             Ok(_) => Ok(()),
 
             Err(e) => match &e {
-                oxide_api::Error::InvalidRequest(_)
-                | oxide_api::Error::CommunicationError(_)
-                | oxide_api::Error::InvalidResponsePayload(_)
-                | oxide_api::Error::UnexpectedResponse(_) => Err(e),
+                oxide::Error::InvalidRequest(_)
+                | oxide::Error::CommunicationError(_)
+                | oxide::Error::InvalidResponsePayload(_, _)
+                | oxide::Error::UnexpectedResponse(_)
+                | oxide::Error::InvalidUpgrade(_)
+                | oxide::Error::ResponseBodyError(_)
+                | oxide::Error::PreHookError(_) => Err(e),
 
-                oxide_api::Error::ErrorResponse(response_value) => {
+                oxide::Error::ErrorResponse(response_value) => {
                     let status = response_value.status();
 
                     if status == http::StatusCode::NOT_FOUND {
@@ -155,12 +158,15 @@ impl SnapshotActor {
             Ok(response_value) => Ok(Some(response_value.into_inner().state)),
 
             Err(e) => match &e {
-                oxide_api::Error::InvalidRequest(_)
-                | oxide_api::Error::CommunicationError(_)
-                | oxide_api::Error::InvalidResponsePayload(_)
-                | oxide_api::Error::UnexpectedResponse(_) => Err(e),
+                oxide::Error::InvalidRequest(_)
+                | oxide::Error::CommunicationError(_)
+                | oxide::Error::InvalidResponsePayload(_, _)
+                | oxide::Error::UnexpectedResponse(_)
+                | oxide::Error::InvalidUpgrade(_)
+                | oxide::Error::ResponseBodyError(_)
+                | oxide::Error::PreHookError(_) => Err(e),
 
-                oxide_api::Error::ErrorResponse(response_value) => {
+                oxide::Error::ErrorResponse(response_value) => {
                     let status = response_value.status();
 
                     // It's OK if the snapshot just isn't there. Any other error

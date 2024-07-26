@@ -12,10 +12,10 @@ pub async fn sleep_random_ms(max_millis: u64) {
     tokio::time::sleep(duration).await;
 }
 
-pub type OxideApiError = oxide_api::Error<oxide_api::types::Error>;
+pub type OxideApiError = oxide::Error<oxide::types::Error>;
 
 pub fn unwrap_oxide_api_error<T>(
-    result: core::result::Result<oxide_api::ResponseValue<T>, OxideApiError>,
+    result: core::result::Result<oxide::ResponseValue<T>, OxideApiError>,
 ) -> core::result::Result<(), OxideApiError> {
     result.map(|_| ())
 }
@@ -28,13 +28,13 @@ pub fn unwrap_oxide_api_error<T>(
 ///   because the connection to Nexus was interrupted or because a malformed
 ///   response was received.
 pub fn fail_if_no_response<U>(
-    e: oxide_api::Error<U>,
-) -> core::result::Result<(), oxide_api::Error<U>>
+    e: oxide::Error<U>,
+) -> core::result::Result<(), oxide::Error<U>>
 where
     U: std::fmt::Debug + Send + Sync,
 {
     match e {
-        oxide_api::Error::ErrorResponse(_) => Ok(()),
+        oxide::Error::ErrorResponse(_) => Ok(()),
         _ => Err(e),
     }
 }
@@ -50,26 +50,33 @@ where
 ///
 /// - `Ok` otherwise
 pub fn fail_if_500<U>(
-    e: oxide_api::Error<U>,
-) -> core::result::Result<(), oxide_api::Error<U>>
+    e: oxide::Error<U>,
+) -> core::result::Result<(), oxide::Error<U>>
 where
     U: std::fmt::Debug + Send + Sync,
 {
     match &e {
-        oxide_api::Error::ErrorResponse(r) => match r.status() {
+        oxide::Error::ErrorResponse(r) => match r.status() {
             // The call returned an error response
             reqwest::StatusCode::INTERNAL_SERVER_ERROR => Err(e),
 
             _ => Ok(()),
         },
 
-        // There was a communication error, or deserialization failed, or an
-        // unexpected response was received
-        oxide_api::Error::CommunicationError(_)
-        | oxide_api::Error::InvalidResponsePayload(_)
-        | oxide_api::Error::UnexpectedResponse(_) => Err(e),
+        // There was a communication error
+        oxide::Error::CommunicationError(_)
+        // or there was an error reading the response
+        | oxide::Error::ResponseBodyError(_)
+        // or deserialization failed
+        | oxide::Error::InvalidResponsePayload(_, _)
+        // or an unexpected response was received
+        | oxide::Error::UnexpectedResponse(_)
+        // or there was an error upgrading the connection
+        | oxide::Error::InvalidUpgrade(_)
+        // or there was an error processing a request pre-hook
+        | oxide::Error::PreHookError(_) => Err(e),
 
         // The request was invalid
-        oxide_api::Error::InvalidRequest(_) => Ok(()),
+        oxide::Error::InvalidRequest(_) => Ok(()),
     }
 }
