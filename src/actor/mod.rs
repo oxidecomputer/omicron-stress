@@ -1,13 +1,15 @@
 //! Provides `Actor`s: wrappers around individual tasks that submit API calls to
 //! Nexus.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use tracing::{info, info_span, Instrument};
 
 pub mod disk;
 pub mod instance;
 pub mod snapshot;
+
+use crate::util::OxideApiError;
 
 /// The kinds of actors this module can instantiate.
 pub enum ActorKind {
@@ -23,6 +25,9 @@ pub enum ActorKind {
 
 /// An individual actor task.
 pub struct Actor {
+    /// The actor's name
+    name: String,
+
     /// The tracing span to use for actions taken by this actor.
     span: tracing::Span,
 
@@ -42,10 +47,22 @@ pub struct Actor {
     halt_tx: tokio::sync::oneshot::Sender<()>,
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum AntagonistError {
+    #[error("invalid actor state")]
+    InvalidState(String),
+
+    #[error("oxide api error")]
+    ApiError(#[from] OxideApiError),
+
+    #[error("antagonist {name} disconnected its error channel")]
+    DisconnectedErrorChannel { name: String },
+}
+
 /// A trait implemented by each kind of antagonist actor.
 #[async_trait]
 trait Antagonist: Send + Sync + 'static {
-    async fn antagonize(&self) -> Result<()>;
+    async fn antagonize(&self) -> Result<(), AntagonistError>;
 }
 
 /// Creates an antagonist of the specified kind.
@@ -73,7 +90,7 @@ impl Actor {
     pub fn new(
         name: String,
         kind: ActorKind,
-    ) -> Result<(Self, tokio::sync::mpsc::Receiver<anyhow::Error>)> {
+    ) -> Result<(Self, tokio::sync::mpsc::Receiver<AntagonistError>)> {
         let span = info_span!("actor", name = &name);
         let (error_tx, error_rx) = tokio::sync::mpsc::channel(1);
         let (pause_tx, mut pause_rx) = tokio::sync::mpsc::channel::<bool>(1);
@@ -115,10 +132,7 @@ impl Actor {
                         }
                     }
 
-                    let result = antagonist
-                        .antagonize()
-                        .await
-                        .context(format!("actor {}", name));
+                    let result = antagonist.antagonize().await;
                     if let Err(e) = result {
                         if error_tx.send(e).await.is_err() {
                             break;
@@ -129,7 +143,12 @@ impl Actor {
             .instrument(span.clone()),
         );
 
-        Ok((Self { span, task, pause_tx, paused_rx, halt_tx }, error_rx))
+        Ok((Self { name, span, task, pause_tx, paused_rx, halt_tx }, error_rx))
+    }
+
+    /// Return this actor's name
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Directs this actor to pause and waits for it to report that it has done

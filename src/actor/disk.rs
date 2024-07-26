@@ -1,7 +1,7 @@
 //! An antagonist that exercises disk lifecycle commands (create, delete).
 
-use anyhow::{Context, Result};
 use async_trait::async_trait;
+use core::result::Result;
 use oxide_api::types::BlockSize;
 use oxide_api::types::ByteCount;
 use oxide_api::types::DiskCreate;
@@ -9,16 +9,26 @@ use oxide_api::types::DiskSource;
 use oxide_api::types::DiskState;
 use oxide_api::types::Name;
 use oxide_api::ClientDisksExt;
-use tracing::{info, trace};
+use tracing::{info, trace, warn};
 
-use crate::util::{fail_if_no_response, sleep_random_ms};
+use crate::actor::AntagonistError;
+use crate::util::sleep_random_ms;
+use crate::util::unwrap_oxide_api_error;
+use crate::util::OxideApiError;
+
+#[derive(Debug, Clone)]
+enum BailReason {
+    /// This disk is in an invalid state
+    InvalidState { state: DiskState },
+}
 
 /// The possible actions that this antagonist can take.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Action {
     Wait,
     Create,
     Delete,
+    Bail { reason: BailReason },
 }
 
 /// The parameters used to configure a disk antagonist.
@@ -40,7 +50,7 @@ pub(super) struct DiskActor {
 
 impl DiskActor {
     /// Creates a new disk antagonist.
-    pub(super) fn new(params: Params) -> Result<Self> {
+    pub(super) fn new(params: Params) -> anyhow::Result<Self> {
         Ok(Self {
             client: crate::client::get_client(crate::config())?,
             project: params.project,
@@ -55,7 +65,7 @@ impl DiskActor {
     /// - Ok(Some(state)) if the query succeeded.
     /// - Ok(None) if the query failed with a "not found" error.
     /// - Err if the query failed for any other reason.
-    async fn get_disk_state(&self) -> Result<Option<DiskState>> {
+    async fn get_disk_state(&self) -> Result<Option<DiskState>, OxideApiError> {
         let res = self
             .client
             .disk_view()
@@ -71,7 +81,7 @@ impl DiskActor {
                 oxide_api::Error::InvalidRequest(_)
                 | oxide_api::Error::CommunicationError(_)
                 | oxide_api::Error::InvalidResponsePayload(_)
-                | oxide_api::Error::UnexpectedResponse(_) => Err(e.into()),
+                | oxide_api::Error::UnexpectedResponse(_) => Err(e),
 
                 oxide_api::Error::ErrorResponse(response_value) => {
                     let status = response_value.status();
@@ -81,7 +91,7 @@ impl DiskActor {
                     if status == http::StatusCode::NOT_FOUND {
                         Ok(None)
                     } else {
-                        Err(e.into())
+                        Err(e)
                     }
                 }
             },
@@ -89,7 +99,7 @@ impl DiskActor {
     }
 
     /// Asks to create this actor's disk. The created disk size is 1 GB.
-    async fn create_disk(&self) -> Result<()> {
+    async fn create_disk(&self) -> Result<(), OxideApiError> {
         let body = DiskCreate {
             description: self.disk_name.to_owned(),
             disk_source: DiskSource::Blank {
@@ -108,12 +118,16 @@ impl DiskActor {
             .send()
             .await;
 
-        info!(result = ?res, "disk create request returned");
-        Ok(fail_if_no_response(res)?)
+        if res.is_err() {
+            warn!(result = ?res, "disk create request returned");
+        } else {
+            info!(result = ?res, "disk create request returned");
+        }
+        unwrap_oxide_api_error(res)
     }
 
     /// Asks to delete this actor's disk.
-    async fn delete_disk(&self) -> Result<()> {
+    async fn delete_disk(&self) -> Result<(), OxideApiError> {
         info!("sending disk delete request");
         let res = self
             .client
@@ -123,13 +137,17 @@ impl DiskActor {
             .send()
             .await;
 
-        info!(result = ?res, "disk delete request returned");
-        Ok(fail_if_no_response(res)?)
+        if res.is_err() {
+            warn!(result = ?res, "disk delete request returned");
+        } else {
+            info!(result = ?res, "disk delete request returned");
+        }
+        unwrap_oxide_api_error(res)
     }
 
     /// Selects an action for this antagonist to take given that its disk was
     /// observed to be in the supplied `state`.
-    fn get_next_action(&self, state: DiskState) -> Result<Action> {
+    fn get_next_action(&self, state: DiskState) -> Action {
         use rand::prelude::Distribution;
         let actions = [Action::Wait, Action::Create, Action::Delete];
 
@@ -143,30 +161,29 @@ impl DiskActor {
             DiskState::Detached => [35, 30, 35],
 
             _ => {
-                anyhow::bail!(
-                    "disk {} unexpectedly in state {:?}",
-                    self.disk_name,
-                    state,
-                );
+                return Action::Bail {
+                    reason: BailReason::InvalidState { state },
+                };
             }
         };
 
-        let dist = rand::distributions::WeightedIndex::new(weights)
-            .context("generating disk action weights")?;
+        // `new` returns an error if the iterator is empty, if any weight is <
+        // 0, or if its total value is 0.
+        let dist = rand::distributions::WeightedIndex::new(weights).unwrap();
         let mut rng = rand::thread_rng();
-        Ok(actions[dist.sample(&mut rng)])
+        actions[dist.sample(&mut rng)].clone()
     }
 }
 
 #[async_trait]
 impl super::Antagonist for DiskActor {
     #[tracing::instrument(level = "info", skip(self), fields(disk_name = self.disk_name))]
-    async fn antagonize(&self) -> Result<()> {
+    async fn antagonize(&self) -> Result<(), AntagonistError> {
         trace!("querying disk state");
         let state = match self.get_disk_state().await? {
             None => {
                 info!("disk doesn't exist, will try to create it");
-                return self.create_disk().await;
+                return self.create_disk().await.map_err(Into::into);
             }
             Some(state) => {
                 trace!(?state, "got disk state");
@@ -176,16 +193,24 @@ impl super::Antagonist for DiskActor {
 
         sleep_random_ms(100).await;
 
-        let action = self.get_next_action(state)?;
+        let action = self.get_next_action(state);
         trace!(?action, "selected action");
         let result = match action {
             Action::Wait => Ok(()),
             Action::Create => self.create_disk().await,
             Action::Delete => self.delete_disk().await,
+            Action::Bail { reason } => match reason {
+                BailReason::InvalidState { state } => {
+                    return Err(AntagonistError::InvalidState(format!(
+                        "disk {} unexpectedly in state {:?}",
+                        self.disk_name, state,
+                    )));
+                }
+            },
         };
 
         sleep_random_ms(100).await;
 
-        result
+        result.map_err(Into::into)
     }
 }

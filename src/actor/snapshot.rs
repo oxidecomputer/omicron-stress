@@ -1,7 +1,7 @@
 //! An antagonist that exercises snapshot lifecycle commands (create, delete).
 
-use anyhow::{Context, Result};
 use async_trait::async_trait;
+use core::result::Result;
 use oxide_api::types::BlockSize;
 use oxide_api::types::ByteCount;
 use oxide_api::types::DiskCreate;
@@ -11,16 +11,26 @@ use oxide_api::types::SnapshotCreate;
 use oxide_api::types::SnapshotState;
 use oxide_api::ClientDisksExt;
 use oxide_api::ClientSnapshotsExt;
-use tracing::{info, trace};
+use tracing::{info, trace, warn};
 
-use crate::util::{fail_if_no_response, sleep_random_ms};
+use crate::actor::AntagonistError;
+use crate::util::sleep_random_ms;
+use crate::util::unwrap_oxide_api_error;
+use crate::util::OxideApiError;
+
+#[derive(Debug, Clone)]
+enum BailReason {
+    /// This snapshot is in an invalid state
+    InvalidState { state: SnapshotState },
+}
 
 /// The possible actions that this antagonist can take.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Action {
     Wait,
     Create,
     Delete,
+    Bail { reason: BailReason },
 }
 
 /// The parameters used to configure a snapshot antagonist.
@@ -47,7 +57,7 @@ pub(super) struct SnapshotActor {
 
 impl SnapshotActor {
     /// Creates a new snapshot antagonist.
-    pub(super) fn new(params: Params) -> Result<Self> {
+    pub(super) fn new(params: Params) -> anyhow::Result<Self> {
         Ok(Self {
             client: crate::client::get_client(crate::config())?,
             project: params.project,
@@ -65,7 +75,7 @@ impl SnapshotActor {
         )
     }
 
-    async fn create_backing_disk(&self) -> Result<()> {
+    async fn create_backing_disk(&self) -> Result<(), OxideApiError> {
         let res = self
             .client
             .disk_view()
@@ -81,7 +91,7 @@ impl SnapshotActor {
                 oxide_api::Error::InvalidRequest(_)
                 | oxide_api::Error::CommunicationError(_)
                 | oxide_api::Error::InvalidResponsePayload(_)
-                | oxide_api::Error::UnexpectedResponse(_) => Err(e.into()),
+                | oxide_api::Error::UnexpectedResponse(_) => Err(e),
 
                 oxide_api::Error::ErrorResponse(response_value) => {
                     let status = response_value.status();
@@ -107,12 +117,16 @@ impl SnapshotActor {
                             .send()
                             .await;
 
-                        info!(result = ?res, "disk create request returned");
-                        fail_if_no_response(res)?;
+                        if res.is_err() {
+                            warn!(result = ?res, "disk create request returned");
+                        } else {
+                            info!(result = ?res, "disk create request returned");
+                        }
+                        unwrap_oxide_api_error(res)?;
 
                         Ok(())
                     } else {
-                        Err(e.into())
+                        Err(e)
                     }
                 }
             },
@@ -126,7 +140,9 @@ impl SnapshotActor {
     /// - Ok(Some(state)) if the query succeeded.
     /// - Ok(None) if the query failed with a "not found" error.
     /// - Err if the query failed for any other reason.
-    async fn get_snapshot_state(&self) -> Result<Option<SnapshotState>> {
+    async fn get_snapshot_state(
+        &self,
+    ) -> Result<Option<SnapshotState>, OxideApiError> {
         let res = self
             .client
             .snapshot_view()
@@ -142,7 +158,7 @@ impl SnapshotActor {
                 oxide_api::Error::InvalidRequest(_)
                 | oxide_api::Error::CommunicationError(_)
                 | oxide_api::Error::InvalidResponsePayload(_)
-                | oxide_api::Error::UnexpectedResponse(_) => Err(e.into()),
+                | oxide_api::Error::UnexpectedResponse(_) => Err(e),
 
                 oxide_api::Error::ErrorResponse(response_value) => {
                     let status = response_value.status();
@@ -152,7 +168,7 @@ impl SnapshotActor {
                     if status == http::StatusCode::NOT_FOUND {
                         Ok(None)
                     } else {
-                        Err(e.into())
+                        Err(e)
                     }
                 }
             },
@@ -160,7 +176,7 @@ impl SnapshotActor {
     }
 
     /// Asks to create this actor's snapshot
-    async fn create_snapshot(&self) -> Result<()> {
+    async fn create_snapshot(&self) -> Result<(), OxideApiError> {
         let body = SnapshotCreate {
             name: Name::try_from(&self.get_snapshot_name()).unwrap(),
             description: self.get_snapshot_name(),
@@ -176,12 +192,17 @@ impl SnapshotActor {
             .send()
             .await;
 
-        info!(result = ?res, "snapshot create request returned");
-        Ok(fail_if_no_response(res)?)
+        if res.is_err() {
+            warn!(result = ?res, "snapshot create request returned");
+        } else {
+            info!(result = ?res, "snapshot create request returned");
+        }
+
+        unwrap_oxide_api_error(res)
     }
 
     /// Asks to delete this actor's snapshot.
-    async fn delete_snapshot(&self) -> Result<()> {
+    async fn delete_snapshot(&self) -> Result<(), OxideApiError> {
         info!("sending snapshot delete request");
         let res = self
             .client
@@ -191,13 +212,18 @@ impl SnapshotActor {
             .send()
             .await;
 
-        info!(result = ?res, "snapshot delete request returned");
-        Ok(fail_if_no_response(res)?)
+        if res.is_err() {
+            warn!(result = ?res, "snapshot delete request returned");
+        } else {
+            info!(result = ?res, "snapshot delete request returned");
+        }
+
+        unwrap_oxide_api_error(res)
     }
 
     /// Selects an action for this antagonist to take given that its snapshot
     /// was observed to be in the supplied `state`.
-    fn get_next_action(&self, state: SnapshotState) -> Result<Action> {
+    fn get_next_action(&self, state: SnapshotState) -> Action {
         use rand::prelude::Distribution;
         let actions = [Action::Wait, Action::Create, Action::Delete];
 
@@ -218,25 +244,24 @@ impl SnapshotActor {
             }
 
             _ => {
-                anyhow::bail!(
-                    "snapshot {} unexpectedly in state {:?}",
-                    self.snapshot_name,
-                    state,
-                );
+                return Action::Bail {
+                    reason: BailReason::InvalidState { state },
+                }
             }
         };
 
-        let dist = rand::distributions::WeightedIndex::new(weights)
-            .context("generating snapshot action weights")?;
+        // `new` returns an error if the iterator is empty, if any weight is <
+        // 0, or if its total value is 0.
+        let dist = rand::distributions::WeightedIndex::new(weights).unwrap();
         let mut rng = rand::thread_rng();
-        Ok(actions[dist.sample(&mut rng)])
+        actions[dist.sample(&mut rng)].clone()
     }
 }
 
 #[async_trait]
 impl super::Antagonist for SnapshotActor {
     #[tracing::instrument(level = "info", skip(self), fields(snapshot_name = self.snapshot_name))]
-    async fn antagonize(&self) -> Result<()> {
+    async fn antagonize(&self) -> Result<(), AntagonistError> {
         trace!("querying disk state");
         self.create_backing_disk().await?;
 
@@ -244,7 +269,7 @@ impl super::Antagonist for SnapshotActor {
         let state = match self.get_snapshot_state().await? {
             None => {
                 info!("snapshot doesn't exist, will try to create it");
-                return self.create_snapshot().await;
+                return self.create_snapshot().await.map_err(Into::into);
             }
             Some(state) => {
                 trace!(?state, "got snapshot state");
@@ -254,16 +279,24 @@ impl super::Antagonist for SnapshotActor {
 
         sleep_random_ms(100).await;
 
-        let action = self.get_next_action(state)?;
+        let action = self.get_next_action(state);
         trace!(?action, "selected action");
         let result = match action {
             Action::Wait => Ok(()),
             Action::Create => self.create_snapshot().await,
             Action::Delete => self.delete_snapshot().await,
+            Action::Bail { reason } => match reason {
+                BailReason::InvalidState { state } => {
+                    return Err(AntagonistError::InvalidState(format!(
+                        "snapshot {} is in invalid state {:?}",
+                        self.snapshot_name, state,
+                    )));
+                }
+            },
         };
 
         sleep_random_ms(100).await;
 
-        result
+        result.map_err(Into::into)
     }
 }

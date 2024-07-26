@@ -9,9 +9,6 @@ use oxide_api::{
     types::{IpRange, Ipv4Range, Name, ProjectCreate},
     ClientProjectsExt, ClientSystemNetworkingExt,
 };
-use std::future::Future;
-use std::pin::Pin;
-use tokio_stream::StreamExt;
 use tracing::{error, info};
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -19,6 +16,10 @@ mod actor;
 mod client;
 mod config;
 mod util;
+
+use actor::AntagonistError;
+use util::fail_if_500;
+use util::fail_if_no_response;
 
 /// The global command-line configuration for a stress runner instance.
 pub static CONFIG: OnceLock<config::Config> = OnceLock::new();
@@ -95,13 +96,11 @@ async fn main() -> Result<()> {
     create_test_project(&client).await?;
 
     let mut actors = Vec::new();
-    let mut error_futures: FuturesUnordered<
-        Pin<Box<dyn Future<Output = Option<anyhow::Error>>>>,
-    > = FuturesUnordered::new();
+    let mut error_channels: Vec<_> = Vec::new();
 
     for inst in 0..config().num_test_instances {
         for actor_index in 0..config().threads_per_instance {
-            let (actor, mut error_ch) = actor::Actor::new(
+            let (actor, error_ch) = actor::Actor::new(
                 format!("inst{}_{}", inst, actor_index),
                 ActorKind::Instance(instance::Params {
                     project: PROJECT_NAME.to_owned(),
@@ -109,14 +108,14 @@ async fn main() -> Result<()> {
                 }),
             )?;
 
+            error_channels.push((actor.name().to_string(), error_ch));
             actors.push(actor);
-            error_futures.push(Box::pin(async move { error_ch.recv().await }));
         }
     }
 
     for disk in 0..config().num_test_disks {
         for actor_index in 0..config().threads_per_disk {
-            let (actor, mut error_ch) = actor::Actor::new(
+            let (actor, error_ch) = actor::Actor::new(
                 format!("disk{}_{}", disk, actor_index),
                 ActorKind::Disk(disk::Params {
                     project: PROJECT_NAME.to_owned(),
@@ -124,14 +123,14 @@ async fn main() -> Result<()> {
                 }),
             )?;
 
+            error_channels.push((actor.name().to_string(), error_ch));
             actors.push(actor);
-            error_futures.push(Box::pin(async move { error_ch.recv().await }));
         }
     }
 
     for snapshot in 0..config().num_test_snapshots {
         for actor_index in 0..config().threads_per_snapshot {
-            let (actor, mut error_ch) = actor::Actor::new(
+            let (actor, error_ch) = actor::Actor::new(
                 format!("snapshot{}_{}", snapshot, actor_index),
                 ActorKind::Snapshot(snapshot::Params {
                     project: PROJECT_NAME.to_owned(),
@@ -144,15 +143,75 @@ async fn main() -> Result<()> {
                 }),
             )?;
 
+            error_channels.push((actor.name().to_string(), error_ch));
             actors.push(actor);
-            error_futures.push(Box::pin(async move { error_ch.recv().await }));
         }
     }
 
+    let (error_tx, mut error_rx) =
+        tokio::sync::mpsc::channel::<AntagonistError>(1);
+
+    for (name, mut error_ch) in error_channels {
+        let error_tx = error_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match error_ch.recv().await {
+                    Some(e) => {
+                        let _ = error_tx.send(e).await;
+                    }
+
+                    None => {
+                        let _ = error_tx
+                            .send(AntagonistError::DisconnectedErrorChannel {
+                                name,
+                            })
+                            .await;
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     info!("Starting stress test");
-    tokio::select! {
-        err = error_futures.next() => error!("actor error: {:?}", err),
-        _ = ctrlc_rx.recv() => info!("got ctrl-c, exiting"),
+    loop {
+        tokio::select! {
+            err = error_rx.recv() => {
+                match err {
+                    None => {
+                        error!("error_rx disconnected!");
+                        break;
+                    }
+
+                    Some(err) => {
+                        match err {
+                            AntagonistError::ApiError(err) => {
+                                if config().server_errors_fatal {
+                                    if let Err(err) = fail_if_500(err) {
+                                        error!("actor error: {:?}", err);
+                                        break;
+                                    }
+                                } else if let Err(err) = fail_if_no_response(err) {
+                                    error!("actor error: {:?}", err);
+                                    break;
+                                }
+                            }
+
+                            AntagonistError::InvalidState(_)
+                            | AntagonistError::DisconnectedErrorChannel { .. } => {
+                                error!("{err}");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            _ = ctrlc_rx.recv() => {
+                info!("got ctrl-c, exiting");
+                break;
+            }
+        }
     }
 
     let join_futures = FuturesUnordered::new();

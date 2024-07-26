@@ -20,6 +20,7 @@ oxide-api = { git = "http://github.com/oxidecomputer/oxide.rs.git", branch = "ma
 rand = "0.8.5"
 reqwest = "0.11.18"
 serde = { version = "1.0.163", features = ["derive"] }
+thiserror = "1.0.49"
 tokio = { version = "1.28.2", features = ["full"] }
 tokio-stream = { version = "0.1.14", features = ["sync"] }
 toml = "0.7.4"
