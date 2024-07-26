@@ -1,6 +1,5 @@
 //! An antagonist that exercises snapshot lifecycle commands (create, delete).
 
-use anyhow::Context;
 use async_trait::async_trait;
 use core::result::Result;
 use oxide_api::types::BlockSize;
@@ -246,8 +245,10 @@ impl SnapshotActor {
             }
         };
 
+        // `new` returns an error if the iterator is empty, if any weight is <
+        // 0, or if its total value is 0.
         let dist = rand::distributions::WeightedIndex::new(weights)
-            .context("generating snapshot action weights")?;
+            .unwrap();
         let mut rng = rand::thread_rng();
         Ok(actions[dist.sample(&mut rng)])
     }

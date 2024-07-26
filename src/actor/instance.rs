@@ -1,7 +1,6 @@
 //! An antagonist that exercises instance lifecycle commands (create, start,
 //! stop, destroy).
 
-use anyhow::Context;
 use async_trait::async_trait;
 use core::result::Result;
 use oxide_api::{types::InstanceState, ClientInstancesExt};
@@ -231,8 +230,10 @@ impl InstanceActor {
             ),
         };
 
+        // `new` returns an error if the iterator is empty, if any weight is <
+        // 0, or if its total value is 0.
         let dist = rand::distributions::WeightedIndex::new(weights)
-            .context("generating instance action weights")?;
+            .unwrap();
         let mut rng = rand::thread_rng();
         Ok(actions[dist.sample(&mut rng)])
     }
