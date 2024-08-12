@@ -42,37 +42,51 @@ struct Credential {
     token: String,
 }
 
+/// The supported types of login config files, `credentials.toml` or `hosts.toml`.
+#[derive(Copy, Clone, Debug)]
+enum ConfigType {
+    Credentials,
+    Hosts,
+}
+
+impl ConfigType {
+    /// The name of the login config file.
+    fn file_name(&self) -> &str {
+        match self {
+            ConfigType::Credentials => "credentials.toml",
+            ConfigType::Hosts => "hosts.toml",
+        }
+    }
+}
+
 /// An abstraction over `credentials.toml` and `hosts.toml` files.
 struct LoginConfig {
+    /// The directory containing the login config file.
     dir: PathBuf,
+
+    /// The type of login config file.
+    cfg_ty: ConfigType,
 }
 
 impl LoginConfig {
-    /// Checks whether `credentials.toml` or `hosts.toml` exist.
-    pub fn exists(&self) -> bool {
-        let creds = self.dir.clone().join("credentials.toml");
-        let hosts = self.dir.clone().join("hosts.toml");
+    pub fn try_new(dir: PathBuf) -> Option<Self> {
+        let creds = dir.clone().join("credentials.toml").exists();
+        let hosts = dir.clone().join("hosts.toml").exists();
 
-        creds.exists() || hosts.exists()
+        let cfg_ty = match (creds, hosts) {
+            (true, _) => ConfigType::Credentials,
+            (_, true) => ConfigType::Hosts,
+            _ => return None,
+        };
+
+        Some(Self { dir, cfg_ty })
     }
 
     /// Read `credentials.toml` in, falling back to `hosts.toml if not present.
     pub fn read_config(&self) -> Result<Hosts> {
-        let hosts = self.read_credentials_toml()?;
-        if let Some(hosts) = hosts {
-            return Ok(hosts);
-        }
-        self.read_hosts_toml()
-    }
-
-    /// The name of the config file being used for credentials.
-    pub fn file_name(&self) -> &str {
-        let creds = self.dir.clone().join("credentials.toml");
-        let hosts = self.dir.clone().join("hosts.toml");
-        match (creds.exists(), hosts.exists()) {
-            (true, _) => "credentials.toml",
-            (_, true) => "hosts.toml",
-            (false, false) => "no config found",
+        match self.cfg_ty {
+            ConfigType::Credentials => self.read_credentials_toml(),
+            ConfigType::Hosts => self.read_hosts_toml(),
         }
     }
 
@@ -86,11 +100,8 @@ impl LoginConfig {
     }
 
     /// Reads the contents of a `credentials.toml` file located in `dir`.
-    fn read_credentials_toml(&self) -> Result<Option<Hosts>> {
+    fn read_credentials_toml(&self) -> Result<Hosts> {
         let dir = self.dir.join("credentials.toml");
-        if !dir.exists() {
-            return Ok(None);
-        }
         let credentials_content = std::fs::read_to_string(dir)?;
         let creds: Credentials = toml::from_str(&credentials_content)?;
 
@@ -101,7 +112,7 @@ impl LoginConfig {
                 .insert(cred.host, Host { user: cred.user, token: cred.token });
         }
 
-        Ok(Some(Hosts { hosts }))
+        Ok(Hosts { hosts })
     }
 }
 
@@ -126,7 +137,7 @@ pub fn get_client(config: &crate::config::Config) -> Result<oxide::Client> {
     // If the config containins a directory to search for login credentials, look
     // there. Otherwise, try to get the current user's home directory and
     // search in its `.config/oxide` subdirectory.
-    let hosts_toml_dir = if let Some(dir) = config_dir {
+    let creds_toml_dir = if let Some(dir) = config_dir {
         Some(dir.clone())
     } else if let Some(mut path) = dirs::home_dir() {
         path.push(".config/oxide");
@@ -138,13 +149,15 @@ pub fn get_client(config: &crate::config::Config) -> Result<oxide::Client> {
     // Attempt to read credentials config and extract a token from it. If this fails
     // for any reason (`credentials/hosts.toml` not found or malformed, or no search path
     // was present), fall back to the OXIDE_TOKEN variable.
-    let token = if let Some(creds_toml_dir) = hosts_toml_dir {
-        let login_config = LoginConfig { dir: creds_toml_dir.clone() };
-
-        if login_config.exists() {
-            info!("reading credentials from {}", creds_toml_dir.display());
+    let token = if let Some(creds_toml_dir) = creds_toml_dir {
+        if let Some(login_config) = LoginConfig::try_new(creds_toml_dir.clone())
+        {
+            info!("reading credentials from {}", login_config.dir.display());
             let hosts = login_config.read_config()?;
-            info!("attempting to read token from {}", login_config.file_name());
+            info!(
+                "attempting to read token from {}",
+                login_config.cfg_ty.file_name()
+            );
             match hosts.hosts.get(&host) {
                 Some(entry) => Some(entry.token.clone()),
                 None => {
