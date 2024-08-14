@@ -23,13 +23,14 @@ struct Host {
 }
 
 /// The contents of an Oxide CLI `credentials.toml` file.
+/// key: profile_name, value: Credential { host, user, token }
 #[derive(Debug, Deserialize, Serialize)]
 struct Credentials {
     /// A map from host names to per-host token and user information.
     profile: HashMap<String, Credential>,
 }
 
-/// The contents of an Oxide CLI `credentials.toml` file.
+/// An individual entry in `credentials.toml`.
 #[derive(Debug, Deserialize, Serialize)]
 struct Credential {
     /// The ID of the user session for this entry.
@@ -147,7 +148,7 @@ pub fn get_client(config: &crate::config::Config) -> Result<oxide::Client> {
     };
 
     // Attempt to read credentials config and extract a token from it. If this fails
-    // for any reason (`credentials/hosts.toml` not found or malformed, or no search path
+    // for any reason (`credentials.toml/hosts.toml` not found or malformed, or no search path
     // was present), fall back to the OXIDE_TOKEN variable.
     let token = if let Some(creds_toml_dir) = creds_toml_dir {
         if let Some(login_config) = LoginConfig::try_new(creds_toml_dir.clone())
