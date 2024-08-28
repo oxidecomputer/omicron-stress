@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{info, warn};
 
 /// The contents of an Oxide CLI `hosts.toml` file.
 #[derive(Debug, Deserialize, Serialize)]
@@ -22,11 +22,99 @@ struct Host {
     token: String,
 }
 
-/// Reads the contents of a hosts.toml file located in `dir`.
-fn read_hosts_toml(mut dir: PathBuf) -> Result<Hosts> {
-    dir.push("hosts.toml");
-    let hosts = std::fs::read_to_string(dir)?;
-    Ok(toml::from_str(&hosts)?)
+/// The contents of an Oxide CLI `credentials.toml` file.
+/// key: profile_name, value: Credential { host, user, token }
+#[derive(Debug, Deserialize, Serialize)]
+struct Credentials {
+    /// A map from host names to per-host token and user information.
+    profile: HashMap<String, Credential>,
+}
+
+/// An individual entry in `credentials.toml`.
+#[derive(Debug, Deserialize, Serialize)]
+struct Credential {
+    /// The ID of the user session for this entry.
+    user: String,
+
+    /// The URL of the host for this entry.
+    host: String,
+
+    /// The authentication token associated with this entry's session.
+    token: String,
+}
+
+/// The supported types of login config files, `credentials.toml` or `hosts.toml`.
+#[derive(Copy, Clone, Debug)]
+enum ConfigType {
+    Credentials,
+    Hosts,
+}
+
+impl ConfigType {
+    /// The name of the login config file.
+    fn file_name(&self) -> &str {
+        match self {
+            ConfigType::Credentials => "credentials.toml",
+            ConfigType::Hosts => "hosts.toml",
+        }
+    }
+}
+
+/// An abstraction over `credentials.toml` and `hosts.toml` files.
+struct LoginConfig {
+    /// The directory containing the login config file.
+    dir: PathBuf,
+
+    /// The type of login config file.
+    cfg_ty: ConfigType,
+}
+
+impl LoginConfig {
+    pub fn try_new(dir: PathBuf) -> Option<Self> {
+        let creds = dir.clone().join("credentials.toml").exists();
+        let hosts = dir.clone().join("hosts.toml").exists();
+
+        let cfg_ty = match (creds, hosts) {
+            (true, _) => ConfigType::Credentials,
+            (_, true) => ConfigType::Hosts,
+            _ => return None,
+        };
+
+        Some(Self { dir, cfg_ty })
+    }
+
+    /// Read `credentials.toml` in, falling back to `hosts.toml if not present.
+    pub fn read_config(&self) -> Result<Hosts> {
+        match self.cfg_ty {
+            ConfigType::Credentials => self.read_credentials_toml(),
+            ConfigType::Hosts => self.read_hosts_toml(),
+        }
+    }
+
+    /// Reads the contents of a hosts.toml file located in `dir`.
+    fn read_hosts_toml(&self) -> Result<Hosts> {
+        let dir = self.dir.join("hosts.toml");
+        let hosts = std::fs::read_to_string(dir)?;
+
+        warn!("hosts.toml is deprecated. Please migrate to credentials.toml");
+        Ok(toml::from_str(&hosts)?)
+    }
+
+    /// Reads the contents of a `credentials.toml` file located in `dir`.
+    fn read_credentials_toml(&self) -> Result<Hosts> {
+        let dir = self.dir.join("credentials.toml");
+        let credentials_content = std::fs::read_to_string(dir)?;
+        let creds: Credentials = toml::from_str(&credentials_content)?;
+
+        let mut hosts = HashMap::new();
+
+        for cred in creds.profile.into_values() {
+            hosts
+                .insert(cred.host, Host { user: cred.user, token: cred.token });
+        }
+
+        Ok(Hosts { hosts })
+    }
 }
 
 /// Gets an Oxide SDK client. See the doc commens in `[crate::config::Config]`
@@ -40,10 +128,17 @@ pub fn get_client(config: &crate::config::Config) -> Result<oxide::Client> {
     };
     info!(%host, "Nexus URI");
 
-    // If the config containins a directory to search for `hosts.toml`, look
+    let config_dir =
+        match (&config.credentials_toml_dir, &config.hosts_toml_dir) {
+            (Some(creds), _) => Some(creds),
+            (_, Some(hosts)) => Some(hosts),
+            _ => None,
+        };
+
+    // If the config containins a directory to search for login credentials, look
     // there. Otherwise, try to get the current user's home directory and
     // search in its `.config/oxide` subdirectory.
-    let hosts_toml_dir = if let Some(dir) = &config.hosts_toml_dir {
+    let creds_toml_dir = if let Some(dir) = config_dir {
         Some(dir.clone())
     } else if let Some(mut path) = dirs::home_dir() {
         path.push(".config/oxide");
@@ -52,33 +147,31 @@ pub fn get_client(config: &crate::config::Config) -> Result<oxide::Client> {
         None
     };
 
-    // Attempt to read `hosts.toml` and extract a token from it. If this fails
-    // for any reason (`hosts.toml` not found or malformed, or no search path
+    // Attempt to read credentials config and extract a token from it. If this fails
+    // for any reason (`credentials.toml/hosts.toml` not found or malformed, or no search path
     // was present), fall back to the OXIDE_TOKEN variable.
-    let token = if let Some(hosts_toml_dir) = hosts_toml_dir {
-        let hosts_toml = {
-            let mut hosts_toml = hosts_toml_dir.clone();
-            hosts_toml.push("hosts.toml");
-            hosts_toml
-        };
-
-        if hosts_toml.exists() {
-            info!("reading hosts.toml from {}", hosts_toml_dir.display());
-            let hosts = read_hosts_toml(hosts_toml_dir)?;
-            info!("attempting to read token from hosts.toml");
+    let token = if let Some(creds_toml_dir) = creds_toml_dir {
+        if let Some(login_config) = LoginConfig::try_new(creds_toml_dir.clone())
+        {
+            info!("reading credentials from {}", login_config.dir.display());
+            let hosts = login_config.read_config()?;
+            info!(
+                "attempting to read token from {}",
+                login_config.cfg_ty.file_name()
+            );
             match hosts.hosts.get(&host) {
                 Some(entry) => Some(entry.token.clone()),
                 None => {
-                    info!("no token found in hosts.toml");
+                    info!("no token found");
                     None
                 }
             }
         } else {
-            info!("hosts.toml file does not exist");
+            info!("could not find credentials.toml or hosts.toml file");
             None
         }
     } else {
-        info!("no search path for hosts.toml");
+        info!("no search path for login credentials");
         None
     };
 

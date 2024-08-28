@@ -47,6 +47,14 @@ pub struct Config {
     #[arg(long)]
     pub hosts_toml_dir: Option<PathBuf>,
 
+    /// The directory in which to search for a `credentials.toml` file from which to
+    /// read an authentication token to supply to Nexus. If not set, defaults to
+    /// $HOME_DIRECTORY/.config/oxide. If no token is found with the
+    /// `hosts.toml` method, falls back to the value of the OXIDE_TOKEN
+    /// environment variable.
+    #[arg(long)]
+    pub credentials_toml_dir: Option<PathBuf>,
+
     /// Halt omicron-stress if a 500 series error was seen
     #[arg(long)]
     pub server_errors_fatal: bool,

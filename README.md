@@ -21,7 +21,8 @@ in order):
 The runner will then try to obtain a login token from the following sources
 (again evaluated in order):
 
-- A `hosts.toml` file stored in one of the following locations:
+- A `credentials.toml` or the deprecated `hosts.toml` file stored in one of the following locations:
+  - The value of the `--credentials-toml-dir` command line option
   - The value of the `--hosts-toml-dir` command line option
   - `$HOME/.config/oxide`
 - The value of the `OXIDE_TOKEN` environment variable
