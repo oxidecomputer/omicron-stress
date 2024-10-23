@@ -49,10 +49,10 @@ pub struct Actor {
 
 #[derive(thiserror::Error, Debug)]
 pub enum AntagonistError {
-    #[error("invalid actor state")]
+    #[error("invalid actor state: {0}")]
     InvalidState(String),
 
-    #[error("oxide api error")]
+    #[error("oxide api error: {0}")]
     ApiError(#[from] OxideApiError),
 
     #[error("antagonist {name} disconnected its error channel")]
