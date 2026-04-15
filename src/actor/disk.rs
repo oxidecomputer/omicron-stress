@@ -2,12 +2,7 @@
 
 use async_trait::async_trait;
 use core::result::Result;
-use oxide::types::BlockSize;
-use oxide::types::ByteCount;
-use oxide::types::DiskCreate;
-use oxide::types::DiskSource;
 use oxide::types::DiskState;
-use oxide::types::Name;
 use oxide::ClientDisksExt;
 use tracing::{info, trace, warn};
 
@@ -31,6 +26,13 @@ enum Action {
     Bail { reason: BailReason },
 }
 
+/// Selects the storage backend for a disk antagonist.
+#[derive(Debug, Clone, Copy)]
+pub enum DiskBackendKind {
+    Distributed,
+    Local,
+}
+
 /// The parameters used to configure a disk antagonist.
 pub struct Params {
     /// The name of the project to create this antagonist's disk in.
@@ -38,23 +40,57 @@ pub struct Params {
 
     /// The name of the disk this antagonist should act on.
     pub disk_name: String,
+
+    /// Which storage backend to use when creating the disk.
+    pub backend: DiskBackendKind,
+}
+
+/// Local types for the disk create request body, matching the server's current
+/// schema which requires `disk_backend` rather than a top-level `disk_source`.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum DiskSource {
+    Blank { block_size: u64 },
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum DiskBackend {
+    Distributed { disk_source: DiskSource },
+    Local {},
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DiskCreateBody {
+    name: String,
+    description: String,
+    disk_backend: DiskBackend,
+    size: u64,
 }
 
 /// The internal state for a disk antagonist.
 #[derive(Debug)]
 pub(super) struct DiskActor {
     client: oxide::Client,
+    http_client: reqwest::Client,
+    host: String,
     project: String,
     disk_name: String,
+    backend: DiskBackendKind,
 }
 
 impl DiskActor {
     /// Creates a new disk antagonist.
     pub(super) fn new(params: Params) -> anyhow::Result<Self> {
+        let (host, http_client) =
+            crate::client::get_http_client(crate::config())?;
         Ok(Self {
-            client: crate::client::get_client(crate::config())?,
+            client: oxide::Client::new_with_client(&host, http_client.clone()),
+            http_client,
+            host,
             project: params.project,
             disk_name: params.disk_name,
+            backend: params.backend,
         })
     }
 
@@ -103,30 +139,38 @@ impl DiskActor {
 
     /// Asks to create this actor's disk. The created disk size is 1 GB.
     async fn create_disk(&self) -> Result<(), OxideApiError> {
-        let body = DiskCreate {
-            description: self.disk_name.to_owned(),
-            disk_source: DiskSource::Blank {
-                block_size: BlockSize::try_from(512_i64).unwrap(),
+        let body = DiskCreateBody {
+            name: self.disk_name.clone(),
+            description: self.disk_name.clone(),
+            disk_backend: match self.backend {
+                DiskBackendKind::Distributed => DiskBackend::Distributed {
+                    disk_source: DiskSource::Blank { block_size: 512 },
+                },
+                DiskBackendKind::Local => DiskBackend::Local {},
             },
-            name: Name::try_from(&self.disk_name).unwrap(),
-            size: ByteCount::from(1024 * 1024 * 1024_u64),
+            size: 1024 * 1024 * 1024,
         };
 
         info!(body = ?body, "sending disk create request");
         let res = self
-            .client
-            .disk_create()
-            .project(&self.project)
-            .body(body)
+            .http_client
+            .post(format!("{}/v1/disks", self.host))
+            .query(&[("project", &self.project)])
+            .json(&body)
             .send()
-            .await;
+            .await
+            .map_err(oxide::Error::CommunicationError)?;
 
-        if res.is_err() {
-            warn!(result = ?res, "disk create request returned");
+        if res.status().is_success() {
+            info!("disk create request returned ok");
+            Ok(())
         } else {
-            info!(result = ?res, "disk create request returned");
+            let err =
+                oxide::ResponseValue::<oxide::types::Error>::from_response(res)
+                    .await?;
+            warn!(result = ?err.status(), "disk create request returned error");
+            Err(oxide::Error::ErrorResponse(err))
         }
-        unwrap_oxide_api_error(res)
     }
 
     /// Asks to delete this actor's disk.
