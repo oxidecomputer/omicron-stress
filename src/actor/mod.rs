@@ -3,6 +3,10 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use tracing::{info, info_span, Instrument};
 
 pub mod disk;
@@ -45,6 +49,9 @@ pub struct Actor {
     /// Sending to this channel directs the actor task to halt at the next
     /// available opportunity.
     halt_tx: tokio::sync::oneshot::Sender<()>,
+
+    /// Counter tracking the number of completed `antagonize` calls.
+    operations: Arc<AtomicU64>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -99,6 +106,9 @@ impl Actor {
 
         let antagonist = make_antagonist(kind)?;
 
+        let operations = Arc::new(AtomicU64::new(0));
+        let ops_counter = Arc::clone(&operations);
+
         let task = tokio::spawn(
             async move {
                 loop {
@@ -133,6 +143,7 @@ impl Actor {
                     }
 
                     let result = antagonist.antagonize().await;
+                    ops_counter.fetch_add(1, Ordering::Relaxed);
                     if let Err(e) = result {
                         if error_tx.send(e).await.is_err() {
                             break;
@@ -143,12 +154,21 @@ impl Actor {
             .instrument(span.clone()),
         );
 
-        Ok((Self { name, span, task, pause_tx, paused_rx, halt_tx }, error_rx))
+        Ok((
+            Self { name, span, task, pause_tx, paused_rx, halt_tx, operations },
+            error_rx,
+        ))
     }
 
-    /// Return this actor's name
+    /// Return this actor's name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Return a shared reference to this actor's operation counter, allowing
+    /// the caller to read the final count after the task has been joined.
+    pub fn operations_arc(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.operations)
     }
 
     /// Directs this actor to pause and waits for it to report that it has done

@@ -120,6 +120,23 @@ async fn main() -> Result<()> {
                 ActorKind::Disk(disk::Params {
                     project: PROJECT_NAME.to_owned(),
                     disk_name: format!("disk{}", disk),
+                    backend: disk::DiskBackendKind::Distributed,
+                }),
+            )?;
+
+            error_channels.push((actor.name().to_string(), error_ch));
+            actors.push(actor);
+        }
+    }
+
+    for disk in 0..config().num_test_local_disks {
+        for actor_index in 0..config().threads_per_local_disk {
+            let (actor, error_ch) = actor::Actor::new(
+                format!("ldisk{}_{}", disk, actor_index),
+                ActorKind::Disk(disk::Params {
+                    project: PROJECT_NAME.to_owned(),
+                    disk_name: format!("ldisk{}", disk),
+                    backend: disk::DiskBackendKind::Local,
                 }),
             )?;
 
@@ -149,7 +166,7 @@ async fn main() -> Result<()> {
     }
 
     let (error_tx, mut error_rx) =
-        tokio::sync::mpsc::channel::<AntagonistError>(1);
+        tokio::sync::mpsc::channel::<(String, AntagonistError)>(1);
 
     for (name, mut error_ch) in error_channels {
         let error_tx = error_tx.clone();
@@ -157,14 +174,17 @@ async fn main() -> Result<()> {
             loop {
                 match error_ch.recv().await {
                     Some(e) => {
-                        let _ = error_tx.send(e).await;
+                        let _ = error_tx.send((name.clone(), e)).await;
                     }
 
                     None => {
                         let _ = error_tx
-                            .send(AntagonistError::DisconnectedErrorChannel {
-                                name,
-                            })
+                            .send((
+                                name.clone(),
+                                AntagonistError::DisconnectedErrorChannel {
+                                    name,
+                                },
+                            ))
                             .await;
                         break;
                     }
@@ -174,6 +194,7 @@ async fn main() -> Result<()> {
     }
 
     info!("Starting stress test");
+    let mut collected_errors: Vec<(String, String)> = Vec::new();
     loop {
         tokio::select! {
             err = error_rx.recv() => {
@@ -183,23 +204,33 @@ async fn main() -> Result<()> {
                         break;
                     }
 
-                    Some(err) => {
+                    Some((actor_name, err)) => {
                         match err {
-                            AntagonistError::ApiError(err) => {
-                                if config().server_errors_fatal {
-                                    if let Err(err) = fail_if_500(err) {
-                                        error!("actor error: {:?}", err);
-                                        break;
-                                    }
-                                } else if let Err(err) = fail_if_no_response(err) {
-                                    error!("actor error: {:?}", err);
+                            AntagonistError::ApiError(api_err) => {
+                                // Capture the error message before the value
+                                // is consumed by the fatality check below.
+                                let err_str = format!("{api_err:?}");
+                                let is_fatal = if config().server_errors_fatal {
+                                    fail_if_500(api_err).is_err()
+                                } else {
+                                    fail_if_no_response(api_err).is_err()
+                                };
+                                collected_errors
+                                    .push((actor_name.clone(), err_str));
+                                if is_fatal {
+                                    error!(
+                                        "actor error: {}",
+                                        collected_errors.last().unwrap().1
+                                    );
                                     break;
                                 }
                             }
 
                             AntagonistError::InvalidState(_)
                             | AntagonistError::DisconnectedErrorChannel { .. } => {
-                                error!("{err}");
+                                let err_str = format!("{err}");
+                                error!("{err_str}");
+                                collected_errors.push((actor_name, err_str));
                                 break;
                             }
                         }
@@ -216,7 +247,12 @@ async fn main() -> Result<()> {
 
     let join_futures = FuturesUnordered::new();
     info!("Halting actors");
+    // Grab the operation-count arcs before consuming the actors. The counts
+    // are read after join_all so that all tasks have fully stopped.
+    let mut actor_arcs: Vec<(String, std::sync::Arc<std::sync::atomic::AtomicU64>)> =
+        Vec::new();
     for a in actors {
+        actor_arcs.push((a.name().to_string(), a.operations_arc()));
         join_futures.push(a.halt().await);
     }
 
@@ -224,5 +260,135 @@ async fn main() -> Result<()> {
     futures::future::join_all(join_futures).await;
 
     info!("b'bye");
+
+    // Print the summary after all tasks have finished so operation counts are
+    // final and errors are complete.
+    println!();
+    println!("=== Stress Test Summary ===");
+    println!();
+    println!("Operations per actor:");
+    let total_ops: u64 = actor_arcs
+        .iter()
+        .map(|(_, arc)| arc.load(std::sync::atomic::Ordering::Relaxed))
+        .sum();
+    for (name, arc) in &actor_arcs {
+        println!(
+            "  {name}: {}",
+            arc.load(std::sync::atomic::Ordering::Relaxed)
+        );
+    }
+    println!("  Total: {total_ops}");
+    println!();
+    // How many distinct error messages to show per actor-type group.
+    const MAX_ERRORS_SHOWN: usize = 5;
+
+    if collected_errors.is_empty() {
+        println!("No failures recorded.");
+    } else {
+        println!("Failures ({} total):", collected_errors.len());
+        println!();
+
+        // Print failures grouped by actor type, deduplicating identical error
+        // messages within each group. Only the top MAX_ERRORS_SHOWN most
+        // frequent unique errors are printed; the rest are counted.
+        let actor_types: &[(&str, &str)] = &[
+            ("Instance", "inst"),
+            ("Disk", "disk"),
+            ("Local disk", "ldisk"),
+            ("Snapshot", "snapshot"),
+        ];
+
+        for (type_label, prefix) in actor_types {
+            let type_errors: Vec<(&str, &str)> = collected_errors
+                .iter()
+                .filter(|(actor, _)| actor.starts_with(prefix))
+                .map(|(actor, msg)| (actor.as_str(), msg.as_str()))
+                .collect();
+
+            if type_errors.is_empty() {
+                continue;
+            }
+
+            // Group by exact error message, accumulating actor names.
+            let mut by_msg: std::collections::HashMap<&str, Vec<&str>> =
+                std::collections::HashMap::new();
+            for (actor, msg) in &type_errors {
+                by_msg.entry(msg).or_default().push(actor);
+            }
+
+            // Sort most-frequent errors first.
+            let mut entries: Vec<(&str, Vec<&str>)> =
+                by_msg.into_iter().collect();
+            entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+            println!(
+                "  {}s ({} failure{}, {} unique):",
+                type_label,
+                type_errors.len(),
+                if type_errors.len() == 1 { "" } else { "s" },
+                entries.len(),
+            );
+            for (msg, actors) in entries.iter().take(MAX_ERRORS_SHOWN) {
+                let count = actors.len();
+                let mut unique_actors = actors.to_vec();
+                unique_actors.sort();
+                unique_actors.dedup();
+                println!("    {count}x [{}] {msg}", unique_actors.join(", "));
+            }
+            if entries.len() > MAX_ERRORS_SHOWN {
+                println!(
+                    "    ... and {} more unique error{}",
+                    entries.len() - MAX_ERRORS_SHOWN,
+                    if entries.len() - MAX_ERRORS_SHOWN == 1 { "" } else { "s" },
+                );
+            }
+            println!();
+        }
+
+        // Catch-all for any actor names that don't match a known prefix.
+        let known_prefixes = ["inst", "disk", "ldisk", "snapshot"];
+        let other_errors: Vec<(&str, &str)> = collected_errors
+            .iter()
+            .filter(|(actor, _)| {
+                !known_prefixes.iter().any(|p| actor.starts_with(p))
+            })
+            .map(|(actor, msg)| (actor.as_str(), msg.as_str()))
+            .collect();
+
+        if !other_errors.is_empty() {
+            let mut by_msg: std::collections::HashMap<&str, Vec<&str>> =
+                std::collections::HashMap::new();
+            for (actor, msg) in &other_errors {
+                by_msg.entry(msg).or_default().push(actor);
+            }
+            let mut entries: Vec<(&str, Vec<&str>)> =
+                by_msg.into_iter().collect();
+            entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+            println!(
+                "  Other ({} failure{}, {} unique):",
+                other_errors.len(),
+                if other_errors.len() == 1 { "" } else { "s" },
+                entries.len(),
+            );
+            for (msg, actors) in entries.iter().take(MAX_ERRORS_SHOWN) {
+                let count = actors.len();
+                let mut unique_actors = actors.to_vec();
+                unique_actors.sort();
+                unique_actors.dedup();
+                println!("    {count}x [{}] {msg}", unique_actors.join(", "));
+            }
+            if entries.len() > MAX_ERRORS_SHOWN {
+                println!(
+                    "    ... and {} more unique error{}",
+                    entries.len() - MAX_ERRORS_SHOWN,
+                    if entries.len() - MAX_ERRORS_SHOWN == 1 { "" } else { "s" },
+                );
+            }
+            println!();
+        }
+    }
+    println!("===========================");
+
     Ok(())
 }

@@ -117,9 +117,11 @@ impl LoginConfig {
     }
 }
 
-/// Gets an Oxide SDK client. See the doc commens in `[crate::config::Config]`
-/// and in the project README for host and token resolution rules.
-pub fn get_client(config: &crate::config::Config) -> Result<oxide::Client> {
+/// Resolves credentials and builds an authenticated reqwest client.
+/// Returns `(host_url, reqwest_client)`.
+pub fn get_http_client(
+    config: &crate::config::Config,
+) -> Result<(String, reqwest::Client)> {
     // Prefer an explicitly-passed host URI to the value of OXIDE_HOST. At least
     // one of these must be specified.
     let host = match config.host_uri.as_ref() {
@@ -135,7 +137,7 @@ pub fn get_client(config: &crate::config::Config) -> Result<oxide::Client> {
             _ => None,
         };
 
-    // If the config containins a directory to search for login credentials, look
+    // If the config contains a directory to search for login credentials, look
     // there. Otherwise, try to get the current user's home directory and
     // search in its `.config/oxide` subdirectory.
     let creds_toml_dir = if let Some(dir) = config_dir {
@@ -199,5 +201,12 @@ pub fn get_client(config: &crate::config::Config) -> Result<oxide::Client> {
         .build()
         .unwrap();
 
+    Ok((host, rclient))
+}
+
+/// Gets an Oxide SDK client. See the doc comments in `[crate::config::Config]`
+/// and in the project README for host and token resolution rules.
+pub fn get_client(config: &crate::config::Config) -> Result<oxide::Client> {
+    let (host, rclient) = get_http_client(config)?;
     Ok(oxide::Client::new_with_client(&host, rclient))
 }

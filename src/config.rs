@@ -12,13 +12,21 @@ pub struct Config {
     #[arg(long, default_value_t = 4)]
     pub threads_per_instance: usize,
 
-    /// The number of test disks to create.
+    /// The number of test distributed disks to create.
     #[arg(long, default_value_t = 4)]
     pub num_test_disks: usize,
 
-    /// The number of antagonist threads to create for each disk.
+    /// The number of antagonist threads to create for each distributed disk.
     #[arg(long, default_value_t = 4)]
     pub threads_per_disk: usize,
+
+    /// The number of test local disks to create.
+    #[arg(long, default_value_t = 4)]
+    pub num_test_local_disks: usize,
+
+    /// The number of antagonist threads to create for each local disk.
+    #[arg(long, default_value_t = 4)]
+    pub threads_per_local_disk: usize,
 
     /// The number of test snapshots to create.
     #[arg(long, default_value_t = 4)]
